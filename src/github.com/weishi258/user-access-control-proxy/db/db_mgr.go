@@ -26,7 +26,8 @@ type DBMgr struct{
 	stmt		[]*sql.Stmt
 }
 func getLogger() *zap.Logger{
-	return GetLogger().With(zap.String("Origin", "DBMgr"))
+	//return GetLogger().With(zap.String("Origin", "DBMgr"))
+	return GetLogger()
 }
 
 func InitDB(dbFile string) (mgr *DBMgr, err error){

@@ -7,10 +7,27 @@ import (
 	"github.com/weishi258/user-access-control-proxy/log"
 	"github.com/weishi258/user-access-control-proxy/db"
 	"go.uber.org/zap"
+	"github.com/weishi258/user-access-control-proxy/server"
+	"os/signal"
+	"syscall"
 )
 const VERSION = "0.1a"
 
+var dbMgr *db.DBMgr
+var sigChan chan os.Signal
+
 func main(){
+
+	// waiting loop for signal
+	sigChan = make(chan os.Signal, 5)
+	done := make(chan bool)
+
+	signal.Notify(sigChan,
+		syscall.SIGHUP,
+		syscall.SIGKILL,
+		syscall.SIGQUIT,
+		syscall.SIGTERM,
+		syscall.SIGINT)
 
 	var err error
 
@@ -39,10 +56,27 @@ func main(){
 	}
 
 	logger := log.InitZapLogger(logLevel, logMode)
-	//var dbMgr *db.DBMgr
-	if _, err = db.InitDB(dbFilePath); err != nil{
-		logger.Error("Start database manager failed", zap.String("error", err.Error()))
+	if dbMgr, err = db.InitDB(dbFilePath); err != nil{
+		logger.Fatal("Start database manager failed", zap.String("error", err.Error()))
 		return
 	}
+	var adminServer *server.AdminServer
+	if adminServer, err = server.NewAdminServer(); err != nil{
+		logger.Fatal(fmt.Sprintf("Create UserAccessControlProxy failed: %s", err.Error()))
+		return
+	}
+	adminServer.Start(sigChan)
+	defer adminServer.Shutdown()
 
+	go func() {
+		_ = <-sigChan
+		//logger.Info("UserAccessControlProxy caught signal for exit",
+		//	zap.Any("signal", sig))
+		done <- true
+	}()
+	<-done
+}
+
+func GetDBMgr() *db.DBMgr{
+	return dbMgr
 }
