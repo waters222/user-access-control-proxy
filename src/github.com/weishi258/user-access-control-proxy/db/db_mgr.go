@@ -184,7 +184,7 @@ func (c *DBMgr) bootstrapDB() (err error){
 	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/?$", EncPermission(ProxyPermission{true, false, false, false}), "", 1, "user panel html access rule"); err != nil{
 		return errors.Wrap(err, "Can not insert guest's user panel web access rule")
 	}
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/login$", EncPermission(ProxyPermission{true, true, false, false}), "", 1, "user panel html access rule"); err != nil{
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/rest/login$", EncPermission(ProxyPermission{true, true, false, false}), "", 1, "user panel html access rule"); err != nil{
 		return errors.Wrap(err, "Can not insert guest's user panel web access rule")
 	}
 	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/statics/.+\\.(json|png|jpg|svg|css)$", EncPermission(ProxyPermission{true, false, false, false}), "", 2, "user panel statics access rule"); err != nil{

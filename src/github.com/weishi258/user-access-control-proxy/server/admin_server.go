@@ -27,6 +27,15 @@ type AdminServer struct{
 	dbMgr 			*db.DBMgr
 }
 
+
+type Route struct {
+	Name        string
+	Method      string
+	Pattern     string
+	Handler     http.HandlerFunc
+}
+
+
 func NewAdminServer(dbMgr *db.DBMgr) (ret *AdminServer, err error){
 	logger := getLogger()
 	ret = &AdminServer{}
@@ -43,7 +52,12 @@ func NewAdminServer(dbMgr *db.DBMgr) (ret *AdminServer, err error){
 
 
 	ret.localRouter = mux.NewRouter().StrictSlash(true)
-
+	for _, route := range RestAdmin{
+		ret.localRouter.Methods(route.Method,"OPTION").Path(route.Pattern).Name(route.Name).Handler(route.Handler)
+	}
+	for _, route := range RestUser{
+		ret.localRouter.Methods(route.Method,"OPTION").Path(route.Pattern).Name(route.Name).Handler(route.Handler)
+	}
 	// get guest group id
 
 	if ret.group, err = ret.dbMgr.GetGroupByName(db.GUEST_GROUP_NAME); err != nil{
@@ -91,7 +105,8 @@ func (c *AdminServer) HandlerFunc(w http.ResponseWriter, r *http.Request){
 	}()
 	logger := getLogger()
 	logger.Debug(fmt.Sprintf("HandlerFunc with uri: %s", r.RequestURI))
-
+	// first remove any header for login info
+	r.Header.Del(PROXY_USER_KEY)
 	// lets check what kind of user it is
 	var cookie *http.Cookie
 	if cookie, err = r.Cookie(SESSION_KEY); err == nil{
@@ -130,8 +145,8 @@ func (c *AdminServer) HandlerFunc(w http.ResponseWriter, r *http.Request){
 				bHasPermission = permission.Delete
 			}
 			if bHasPermission{
-				if len(userName) > 0{
-					r.Header.Add(PROXY_USER_KEY, userName)
+				if len(userName) > 0 {
+					r.Header.Set(PROXY_USER_KEY, userName)
 				}
 				if rule.IsRemote(){
 					c.handleProxy(w, r, rule.ComposeProxyUrl(r.RequestURI))
@@ -146,9 +161,8 @@ func (c *AdminServer) HandlerFunc(w http.ResponseWriter, r *http.Request){
 	}
 
 	http.ServeFile(w, r, fmt.Sprintf("html/errors/%d.html", http.StatusForbidden))
-
-
 }
+
 
 func (c *AdminServer) handleProxy(w http.ResponseWriter, r *http.Request, url string){
 	logger := getLogger()
