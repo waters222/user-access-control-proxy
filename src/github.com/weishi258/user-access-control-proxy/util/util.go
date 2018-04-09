@@ -36,33 +36,3 @@ func EncodeToSha256String(src string) string{
 	return hex.EncodeToString(temp[:])
 }
 
-func DecPermission(permission int8) (ret ProxyPermission){
-	ret.Get = (permission & 0x01) == 0x01
-	ret.Get = (permission & 0x02) == 0x02
-	ret.Get = (permission & 0x04) == 0x04
-	ret.Get = (permission & 0x08) == 0x08
-	return ret
-}
-func EncPermission(input ProxyPermission) (ret int8){
-	ret = 0
-	if input.Get {
-		ret |= 0x01
-	}
-	if input.Post {
-		ret |= 0x02
-	}
-	if input.Put {
-		ret |= 0x04
-	}
-	if input.Delete {
-		ret |= 0x08
-	}
-	return ret
-}
-
-type ProxyPermission struct{
-	Get bool
-	Post bool
-	Put bool
-	Delete bool
-}

@@ -5,9 +5,11 @@ import (
 	. "github.com/weishi258/user-access-control-proxy/log"
 	"go.uber.org/zap"
 	"github.com/pkg/errors"
-	"github.com/weishi258/user-access-control-proxy/util"
 	_ "github.com/mattn/go-sqlite3"
 	"os"
+	"fmt"
+	"sync"
+	"github.com/weishi258/user-access-control-proxy/util"
 )
 
 const(
@@ -16,6 +18,8 @@ const(
 	ADMIN_GROUP_NAME = "admin"
 	SALT_LEN = 32
 	PASSWORD_HASH_LEN = 40
+	USER_GROUP_NAME = "user"
+	USER_URL = "user"
 	GUEST_GROUP_NAME = "guest"
 	ADMIN_URL = "admin"
 )
@@ -24,6 +28,10 @@ const(
 type DBMgr struct{
 	db			*sql.DB
 	stmt		[]*sql.Stmt
+
+	// for fast cache
+	groupRuleMux 		sync.Mutex
+	groupRules			map[int][]Rule
 }
 func getLogger() *zap.Logger{
 	//return GetLogger().With(zap.String("Origin", "DBMgr"))
@@ -42,6 +50,7 @@ func InitDB(dbFile string) (mgr *DBMgr, err error){
 		bHasDB = true
 	}
 	mgr = &DBMgr{}
+	mgr.groupRules = make(map[int][]Rule)
 	if mgr.db, err = sql.Open("sqlite3", dbFile); err != nil{
 		logger.Error("Init SQLite3 failed", zap.String("error", err.Error()))
 		return nil, err
@@ -63,7 +72,7 @@ func InitDB(dbFile string) (mgr *DBMgr, err error){
 }
 func (c* DBMgr)Close() error{
 	if c.db != nil{
-		if err := c.db.Close(); err != nil{
+		if err := c.Close(); err != nil{
 			return err
 		}else{
 			c.db = nil
@@ -115,7 +124,7 @@ func (c *DBMgr) bootstrapDB() (err error){
 	}()
 	// create admin group
 	var res sql.Result
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_GROUP], ADMIN_GROUP_NAME, "Admin Group"); err != nil{
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_GROUP], ADMIN_GROUP_NAME, "Admin Group", 0); err != nil{
 		return errors.Wrap(err, "Can not create admin group")
 	}
 	var rowsAffected int64
@@ -129,10 +138,10 @@ func (c *DBMgr) bootstrapDB() (err error){
 		return errors.Wrap(err, "Get admin group id failed")
 	}
 	// create admin rules
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], adminGrpId, "^"+ADMIN_URL+"$", util.EncPermission(util.ProxyPermission{true, true, true, true}), "local", 1, "admin panel access rule"); err != nil{
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], adminGrpId, "^/"+ADMIN_URL+"$", EncPermission(ProxyPermission{true, true, true, true}), "", 1, "admin panel access rule"); err != nil{
 		return errors.Wrap(err, "Can not insert admin's admin panel web access rule")
 	}
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], adminGrpId, "^"+ADMIN_URL+"/.*$", util.EncPermission(util.ProxyPermission{true, true, true, true}), "local", 2, "admin panel access rule"); err != nil{
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], adminGrpId, "^/"+ADMIN_URL+"/.*$", EncPermission(ProxyPermission{true, true, true, true}), "", 2, "admin panel access rule"); err != nil{
 		return errors.Wrap(err, "Can not insert admin's admin panel full access rule")
 	}
 	// generate salt
@@ -147,8 +156,24 @@ func (c *DBMgr) bootstrapDB() (err error){
 		return err
 	}
 
+	// create users group
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_GROUP], USER_GROUP_NAME, "User Group", 0); err != nil{
+		return errors.Wrap(err, "Can not create user group")
+	}
+	var userGrpId int64
+	if userGrpId, err = res.LastInsertId(); err != nil{
+		return errors.Wrap(err, "Get user group id failed")
+	}
+
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], userGrpId, "^/"+USER_URL+"/?.*$", EncPermission(ProxyPermission{true, true, true, true}), "", 1, "user panel html access rule"); err != nil{
+		return errors.Wrap(err, "Can not insert user's user panel web access rule")
+	}
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], userGrpId, "^/"+USER_URL+"/statics/.+\\.(json|png|jpg|svg|css)$", EncPermission(ProxyPermission{true, false, false, false}), "", 2, "user panel statics access rule"); err != nil{
+		return errors.Wrap(err, "Can not insert user's user panel statics access rule")
+	}
+
 	// create guest group
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_GROUP], GUEST_GROUP_NAME, "Guest Group"); err != nil{
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_GROUP], GUEST_GROUP_NAME, "Guest Group", 0); err != nil{
 		return errors.Wrap(err, "Can not create guest group")
 	}
 	var guestGrpId int64
@@ -156,11 +181,60 @@ func (c *DBMgr) bootstrapDB() (err error){
 		return errors.Wrap(err, "Get guest group id failed")
 	}
 	// create guest rules
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^"+ADMIN_URL+"$", util.EncPermission(util.ProxyPermission{true, false, false, false}), "local", 1, "admin panel html access rule"); err != nil{
-		return errors.Wrap(err, "Can not insert guest's admin panel web access rule")
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/?$", EncPermission(ProxyPermission{true, false, false, false}), "", 1, "user panel html access rule"); err != nil{
+		return errors.Wrap(err, "Can not insert guest's user panel web access rule")
 	}
-	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^"+ADMIN_URL+"/statics/.+\\.(json|png|jpg|svg|css)$", util.EncPermission(util.ProxyPermission{true, false, false, false}), "local", 2, "admin panel statics access rule"); err != nil{
-		return errors.Wrap(err, "Can not insert guest's admin panel statics access rule")
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/login$", EncPermission(ProxyPermission{true, true, false, false}), "", 1, "user panel html access rule"); err != nil{
+		return errors.Wrap(err, "Can not insert guest's user panel web access rule")
+	}
+	if res, err = tx.Exec(StmtMap[STMT_INSERT_RULES], guestGrpId, "^/"+USER_URL+"/statics/.+\\.(json|png|jpg|svg|css)$", EncPermission(ProxyPermission{true, false, false, false}), "", 2, "user panel statics access rule"); err != nil{
+		return errors.Wrap(err, "Can not insert guest's user panel statics access rule")
 	}
 	return nil
+}
+
+func (c *DBMgr)GetGroupByName(name string) (ret *Group, err error){
+	logger := getLogger()
+	var rows *sql.Rows
+	if rows, err = c.db.Query(`select id, name, desc, mutable from `+TABLE_GROUPS+` where name = ?`, name); err != nil{
+		logger.Error("Query group by name failed", zap.String("Error", err.Error()))
+		return nil, errors.Wrap(err, "Get group by name failed")
+	}
+	defer rows.Close()
+	if !rows.Next(){
+		logger.Debug("Group is not exists", zap.String("name", name))
+		return nil, errors.New(fmt.Sprintf("Group %s is not exists", name))
+	}
+	ret = &Group{}
+	if err = rows.Scan(&ret.Id, &ret.Name, &ret.Desc, &ret.Mutable); err != nil{
+		logger.Error("Scan table "+TABLE_GROUPS+" failed", zap.String("error", err.Error()))
+		return nil, err
+	}
+	return ret, nil
+}
+func (c *DBMgr)GetGroupRules(groupId int) (rules []Rule, err error){
+	logger := getLogger()
+	c.groupRuleMux.Lock()
+	defer c.groupRuleMux.Unlock()
+	groupRules, _ := c.groupRules[groupId]
+	if len(groupRules) == 0{
+		var rows *sql.Rows
+		if rows, err = c.db.Query(`select id, group_id, rule,  permission, weight from `+TABLE_RULES+` where group_id = ? order by weight asc`, groupId); err != nil{
+			logger.Error("Query rules by group_id failed", zap.String("Error", err.Error()))
+			return groupRules, err
+		}
+		defer rows.Close()
+		for rows.Next(){
+			rule := Rule{}
+			if err = rows.Scan(&rule.Id, &rule.GroupId, &rule.Rule, &rule.Permission, &rule.Weight); err != nil{
+				logger.Error("Scan group rule failed", zap.String("error", err.Error()))
+				return groupRules, err
+			}
+			groupRules = append(groupRules, rule)
+		}
+		c.groupRules[groupId] = groupRules
+	}
+	rules = make([]Rule, len(groupRules))
+	copy(rules, groupRules)
+	return rules, nil
 }

@@ -11,16 +11,26 @@ import (
 	. "github.com/weishi258/user-access-control-proxy/log"
 	"context"
 	"fmt"
+	"github.com/weishi258/user-access-control-proxy/db"
+	"github.com/pkg/errors"
 )
-
+const(
+	SESSION_KEY = "sessionKey"
+	SESSION_KEY_LEN = 40
+	PROXY_USER_KEY = "proxy-user"
+)
 type AdminServer struct{
-	server    	*http.Server
-	addr		string
+	server    		*http.Server
+	localRouter		*mux.Router
+	addr			string
+	group			*db.Group
+	dbMgr 			*db.DBMgr
 }
 
-func NewAdminServer() (ret *AdminServer, err error){
+func NewAdminServer(dbMgr *db.DBMgr) (ret *AdminServer, err error){
 	logger := getLogger()
 	ret = &AdminServer{}
+	ret.dbMgr = dbMgr
 	ret.addr = os.Getenv("LISTENING_ADDR")
 	router := mux.NewRouter().StrictSlash(true)
 	router.MatcherFunc(ret.MatchFunc).HandlerFunc(ret.HandlerFunc).Methods("OPTION", "GET", "POST", "PUT", "DELETE")
@@ -29,8 +39,17 @@ func NewAdminServer() (ret *AdminServer, err error){
 	methodsOk := handlers.AllowedMethods([]string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"})
 	ret.server = &http.Server{Addr: ret.addr, Handler: handlers.CORS(headersOk, originsOk, methodsOk)(router)}
 	ret.server.SetKeepAlivesEnabled(false)
-
 	logger.Info(fmt.Sprintf("Allowed origin: %s", os.Getenv("ORIGIN_ALLOWED")))
+
+
+	ret.localRouter = mux.NewRouter().StrictSlash(true)
+
+	// get guest group id
+
+	if ret.group, err = ret.dbMgr.GetGroupByName(db.GUEST_GROUP_NAME); err != nil{
+		return nil, errors.Wrap(err, "Can not get guest group from database")
+	}
+
 	return ret, nil
 }
 
@@ -63,8 +82,78 @@ func (c *AdminServer) MatchFunc(r *http.Request, rm *mux.RouteMatch) bool{
 }
 
 func (c *AdminServer) HandlerFunc(w http.ResponseWriter, r *http.Request){
+	var err error
+	var sessionKey string
+	defer func(){
+		if err != nil{
+			http.ServeFile(w, r, fmt.Sprintf("html/errors/%d.html", http.StatusInternalServerError))
+		}
+	}()
 	logger := getLogger()
 	logger.Debug(fmt.Sprintf("HandlerFunc with uri: %s", r.RequestURI))
-	w.WriteHeader(200)
-	w.Write([]byte(fmt.Sprintf("hi there %s", r.RequestURI)))
+
+	// lets check what kind of user it is
+	var cookie *http.Cookie
+	if cookie, err = r.Cookie(SESSION_KEY); err == nil{
+		sessionKey = cookie.Value
+	}
+
+
+	// mock username
+	userName := ""
+	// cookie is empty so try to get it from header
+	if len(sessionKey) != SESSION_KEY_LEN {
+		sessionKey = r.Header.Get(SESSION_KEY)
+	}
+	groupId := c.group.Id
+	if len(sessionKey) == SESSION_KEY_LEN{
+		// get from database
+
+	}
+	var groupRules []db.Rule
+	if groupRules, err = c.dbMgr.GetGroupRules(groupId); err != nil{
+		logger.Error("Get group rules failed", zap.Int("group_id", groupId))
+		return
+	}
+	for _, rule := range groupRules{
+		if rule.Match(r.RequestURI) {
+			permission := rule.GetPermission()
+			bHasPermission := false
+			switch r.Method{
+			case "GET":
+				bHasPermission = permission.Get
+			case "PUT":
+				bHasPermission = permission.Put
+			case "POST":
+				bHasPermission = permission.Post
+			case "DELETE":
+				bHasPermission = permission.Delete
+			}
+			if bHasPermission{
+				if len(userName) > 0{
+					r.Header.Add(PROXY_USER_KEY, userName)
+				}
+				if rule.IsRemote(){
+					c.handleProxy(w, r, rule.ComposeProxyUrl(r.RequestURI))
+				}else{
+					logger.Debug("server local for url", zap.String("url", rule.ComposeProxyUrl(r.RequestURI)))
+					c.localRouter.ServeHTTP(w, r)
+				}
+				return
+			}
+
+		}
+	}
+
+	http.ServeFile(w, r, fmt.Sprintf("html/errors/%d.html", http.StatusForbidden))
+
+
+}
+
+func (c *AdminServer) handleProxy(w http.ResponseWriter, r *http.Request, url string){
+	logger := getLogger()
+	logger.Debug("handleProxy to remote", zap.String("url", url))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Remote OK"))
 }

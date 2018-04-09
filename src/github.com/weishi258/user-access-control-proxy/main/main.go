@@ -61,7 +61,7 @@ func main(){
 		return
 	}
 	var adminServer *server.AdminServer
-	if adminServer, err = server.NewAdminServer(); err != nil{
+	if adminServer, err = server.NewAdminServer(dbMgr); err != nil{
 		logger.Fatal(fmt.Sprintf("Create UserAccessControlProxy failed: %s", err.Error()))
 		return
 	}
@@ -75,8 +75,4 @@ func main(){
 		done <- true
 	}()
 	<-done
-}
-
-func GetDBMgr() *db.DBMgr{
-	return dbMgr
 }
